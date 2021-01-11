@@ -1,31 +1,11 @@
 #include <LiquidCrystal.h>
 #include <EEPROM.h>
-#define BEC_pin 3
 
-LiquidCrystal lcd(8, 9, 4, 5, 6, 7);//Adresa, coloane, linii
-
-volatile int s = 0, m = 0, h = 0; // sec, min, h
-volatile bool one_second = false;// flag pentru o sec
-volatile bool two_second = false;// flag pt 2 sec
-volatile float temperatura, prev_error, suma_error, moving_sp;
-volatile float kp, ki, kd;
-bool flag1 = false;
-bool flag2 = false;
-float dt_inc = 0, dt_rac = 0;
-float T1 = 0, T2 = 0;
-unsigned long uptime = -1;
-
-void timer1()
-{
-  DDRB |= 1 << PB5; // dev pin
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCCR1B |= (1 << WGM12) | (1 << CS12) | _BV(CS10) ;
-  TIMSK1 |= (1 << OCIE1A) ;
-  OCR1A = 15624;
-
-  sei();
-}
+#define BUTTON_OK 6
+#define BUTTON_CANCEL 7
+#define BUTTON_PREV 8
+#define BUTTON_NEXT 9
+#define BEC_pin 10
 
 enum Buttons {
   EV_OK,
@@ -49,21 +29,22 @@ enum Menus {
   MENU_MAX_NUM
 };
 
-struct Parameters
-{
-  float temp = 33 ;
-  float kp = 20;
-  float ki = 15;
-  float kd = 10;
-  int tIncal = 35;
-  int tMen = 40;
-  int tRac = 15;
-};
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 
-Parameters parameter;
+double temp=25;
+float temperatura_citita_senzor;
+float output;
+double kp = 20, ki = 10, kd = 15;
+int tIncal = 30, tMen = 30, tRac = 15;
+double eroare= 0, suma_erori= 0, eroare_anterioara = 0, derivativa = 0, moving_sp;
+double dt= 0.25; // timp esantionare
+int ora = 0, min = 0, sec = 0;
 int change = 0;
+unsigned long uptime = -1;
+int timp_inc , timp_men, timp_rac;
 Menus scroll_menu = MENU_MAIN;
 Menus current_menu =  MENU_MAIN;
+
 
 void state_machine(enum Menus menu, enum Buttons button);
 Buttons GetButtons(void);
@@ -74,79 +55,74 @@ typedef void (state_machine_handler_t)(void);
 void print_menu(enum Menus menu)
 {
   lcd.clear();
-  switch (menu)
+  switch(menu)
   {
     case MENU_KP:
-      lcd.setCursor(0, 0);
-      lcd.print("KP = ");
-      lcd.setCursor(5, 0);
-      lcd.print(parameter.kp);
-      break;
+    	lcd.setCursor(0,1);
+    	lcd.print("KP = ");
+    	lcd.print(kp);
+    	break;
+    
     case MENU_KI:
-      lcd.setCursor(0, 0);
-      lcd.print("KI = ");
-      lcd.setCursor(5, 0);
-      lcd.print(parameter.ki);
-      break;
+    	lcd.setCursor(0,1);
+    	lcd.print("KI = ");
+    	lcd.print(ki);
+    	break;
+    
     case MENU_KD:
-      lcd.setCursor(0, 0);
-      lcd.print("KD = ");
-      lcd.setCursor(5, 0);
-      lcd.print(parameter.kd);
-      break;
+    	lcd.setCursor(0,1);
+    	lcd.print("KD = ");
+    	lcd.print(kd);
+    	break;
+    
     case MENU_TEMP:
-      lcd.setCursor(0, 0);
-      lcd.print("Temp = ");
-      if (parameter.temp < 50)
-      { 
-        lcd.print(parameter.temp);
-      }
-      else
-      { lcd.setCursor(7, 1);
-        lcd.print("MAX!");
-      }
-      break;
-    case MENU_TINCAL:
-      lcd.setCursor(0, 0);
+    	lcd.setCursor(0,1);
+    	lcd.print("Temp = ");
+    	lcd.print(temp);
+    	break;
+    
+     case MENU_TINCAL:
+      lcd.setCursor(0, 1);
       lcd.print("TINCAL = ");
-      lcd.setCursor(9, 0);
-      lcd.print(parameter.tIncal);
+      lcd.print(tIncal);
       break;
+    
     case MENU_TMEN:
-      lcd.setCursor(0, 0);
+      lcd.setCursor(0, 1);
       lcd.print("TMEN = ");
-      lcd.setCursor(7, 0);
-      lcd.print(parameter.tMen);
+      lcd.print(tMen);
       break;
+    
     case MENU_TRAC:
-      lcd.setCursor(0, 0);
+      lcd.setCursor(0, 1);
       lcd.print("TRAC = ");
-      lcd.setCursor(7, 0);
-      lcd.print(parameter.tRac);
+      lcd.print(tRac);
       break;
+    
     case MENU_START:
-      lcd.setCursor(0, 0);
+      lcd.setCursor(0, 1);
       lcd.print("START!");
       break;
-
+    
     case MENU_MAIN:
     default:
-      lcd.setCursor(5, 0);
-      lcd.print("PS 2020");
-
-      break;
-  }
-
-  if (current_menu == MENU_START)
-  {
-    afisare_timp();
-  }
-  else if (current_menu != MENU_MAIN)
-  {
-    lcd.setCursor(0, 1);
-    lcd.print("Modifica");
+    	lcd.setCursor(0,0);
+    	lcd.print("PS1 2021");
+   	 	lcd.setCursor(0,1);
+    	lcd.print("Delitoiu Ruben");
   }
   
+  if (current_menu == MENU_START)
+  {
+    lcd.clear();
+    afisare_timp();
+  }
+  else if(current_menu != MENU_MAIN)
+  {
+    lcd.setCursor(0,0);
+    lcd.print("Modifica - P:");
+    lcd.print(menu);
+  }
 }
 
 void enter_menu(void)
@@ -173,229 +149,191 @@ void go_prev(void)
   scroll_menu = (Menus) ((int)scroll_menu % MENU_MAX_NUM);
 }
 
-
-void save(void)
+void save_kp(void)
 {
-  EEPROM.put(0, parameter);
+  EEPROM.put(0,kp);
+  go_home();
+}
+
+void save_ki(void)
+{
+  EEPROM.put(0,ki);
+  go_home();
+}
+
+void save_kd(void)
+{
+  EEPROM.put(0,kd);
+  go_home();
+}
+
+void save_temp(void)
+{
+  EEPROM.put(0,temp);
+  go_home();
+}
+
+void save_tIncal(void)
+{
+  EEPROM.put(0,tIncal);
+  go_home();
+}
+
+void save_tMen(void)
+{
+  EEPROM.put(0,tMen);
+  go_home();
+}
+
+void save_tRac(void)
+{
+  EEPROM.put(0,tRac);
   go_home();
 }
 
 void inc_kp(void)
 {
-  parameter.kp++;
+  kp++;
   change++;
 }
 
 void inc_ki(void)
 {
-  parameter.ki++;
+  ki++;
   change++;
 }
 
 void inc_kd(void)
 {
-  parameter.kd++;
+  kd++;
   change++;
 }
 
 void dec_kp(void)
 {
-  parameter.kp--;
+  kp--;
   change--;
 }
 
 void dec_ki(void)
 {
-  parameter.ki--;
+  ki--;
   change--;
 }
 
 void dec_kd(void)
 {
-  parameter.kd--;
+  kd--;
   change--;
 }
 
 void inc_temp(void)
 {
-  if (parameter.temp < 50)
-  {
-    parameter.temp++;
+    temp++;
     change++;
-  }
 }
 
 void dec_temp(void)
 {
-  parameter.temp--;
+  temp--;
   change--;
 }
 
 void cancel_Temp(void)
 {
-  parameter.temp -= change;
+  temp -= change;
   go_home();
 }
 
 void cancel_KP(void)
 {
-  parameter.kp -= change;
+  kp -= change;
   go_home();
 }
 
 void cancel_KI(void)
 {
-  parameter.ki -= change;
+  ki -= change;
   go_home();
 }
 
 void cancel_KD(void)
 {
-  parameter.kd -= change;
+  kd -= change;
   go_home();
 }
 
 void cancel_tIncal(void)
 {
-  parameter.tIncal -= change;
+  tIncal -= change;
   go_home();
 }
 
 void inc_tIncal(void)
 {
-  parameter.tIncal++;
+  tIncal++;
   change++;
 }
 
 void dec_tIncal(void)
 {
-  parameter.tIncal--;
+  tIncal--;
   change--;
 }
 
 void cancel_tMen(void)
 {
-  parameter.tMen -= change;
+  tMen -= change;
   go_home();
 }
 
 void inc_tMen(void)
 {
-  parameter.tMen++;
+  tMen++;
   change++;
 }
 
 void dec_tMen(void)
 {
-  parameter.tMen--;
+  tMen--;
   change--;
 }
 
 void cancel_tRac(void)
 {
-  parameter.tRac -= change;
+  tRac -= change;
   go_home();
 }
 
 void inc_tRac(void)
 {
-  parameter.tRac++;
+  tRac++;
   change++;
 }
 
 void dec_tRac(void)
 {
-  parameter.tRac--;
+  tRac--;
   change--;
 }
 
-
-void afisare_timp (void)
-{ int min = 0;
-  int sec = 0;
-  int remaining = 0;
-  uptime ++;
-  
-  int timp_inc = parameter.tIncal;
-  int timp_men = parameter.tMen;
-  int timp_rac = parameter.tRac;
-  float temp = parameter.temp;
-
-  if (temperatura > 0)
-  {
-
-    lcd.setCursor(9, 0);
-    lcd.print("T:");
-    lcd.print(temperatura);
-    if (flag1 == false)
-    {
-      flag1 = true;
-
-      dt_inc = (temp - temperatura) / (timp_inc);
-      T1 = temperatura;
-    }
-
-  }
-
-  lcd.setCursor(0, 0);
-  lcd.print("P:");
-  lcd.print (moving_sp);
-  lcd.setCursor(0, 1);
-  if (uptime < timp_inc)
-  {
-    lcd.print(" TInc:");
-
-    moving_sp = dt_inc * uptime + T1;
-
-    remaining = timp_inc - uptime;
-  }
-  else if (uptime <= (timp_inc + timp_men))
-  { lcd.print(" TMen:");
-    remaining = (timp_inc + timp_men) - uptime;
-  }
-  else if (uptime <= (timp_inc + timp_men + timp_rac))
-  { lcd.print(" TRac:");
-    if (flag2 == false)
-    {
-      flag2 = true;
-      dt_rac = (T1 - temperatura) / (timp_rac);
-      T2 = temperatura;
-    }
-    moving_sp = dt_rac * (uptime - (timp_inc + timp_men)) + T2;
-    remaining = (timp_inc + timp_men + timp_rac) - uptime;
-  }
-  else
-    lcd.print("Oprit: ");
-  min = remaining / 60;
-  sec = remaining % 60;
-  lcd.print(min);
-  lcd.print(":");
-  lcd.print (sec);
-  PID();
-}
-
-bool ok()
+void continua(void)
 {
-  return 1;
-}
-void todo(void)
-{
-  lcd.clear();
   lcd.setCursor(0, 1);
-  lcd.print("To be continued...");
+  lcd.print("Asteapta...");
 }
 
-state_machine_handler_t* sm[MENU_MAX_NUM][EV_MAX_NUM] =
+state_machine_handler_t* sm[MENU_MAX_NUM][EV_MAX_NUM] = 
 { //events: OK , CANCEL , NEXT, PREV
-  {enter_menu, go_home, go_next, go_prev},        // MENU_MAIN
-  {todo, go_home, todo, ok},                      // MENU_START
-  {save, cancel_KP, inc_kp, dec_kp},              // MENU_KP
-  {save, cancel_KI, inc_ki, dec_ki},              // MENU_Ki
-  {save, cancel_KD, inc_kd, dec_kd},              // MENU_Kd
-  {save, cancel_Temp, inc_temp, dec_temp},        // MENU_TEMP
-  {save, cancel_tIncal, inc_tIncal, dec_tIncal},  // MENU_TINCAL
-  {save, cancel_tMen, inc_tMen, dec_tMen},        // MENU_TMEN
-  {save, cancel_tRac, inc_tRac, dec_tRac}         // MENU_TRAC
+  {enter_menu, go_home, go_next, go_prev},  	// MENU_MAIN
+  {continua, go_home, continua, continua},      // MENU_START
+  {save_kp, cancel_KP, inc_kp, dec_kp},       	// MENU_KP
+  {save_ki, cancel_KI, inc_ki, dec_ki},         // MENU_Ki
+  {save_kd, cancel_KD, inc_kd, dec_kd},         // MENU_Kd
+  {save_temp, cancel_Temp, inc_temp, dec_temp}, // MENU_TEMP
+  {save_tIncal, cancel_tIncal, inc_tIncal, dec_tIncal},// MENU_TINCAL
+  {save_tMen, cancel_tMen, inc_tMen, dec_tMen},        // MENU_TMEN
+  {save_tRac, cancel_tRac, inc_tRac, dec_tRac}         // MENU_TRAC
 };
 
 void state_machine(enum Menus menu, enum Buttons button)
@@ -403,153 +341,144 @@ void state_machine(enum Menus menu, enum Buttons button)
   sm[menu][button]();
 }
 
-int evaluateButton(int x) {
-  int result = 0;
-  if (x < 50) {
-    result = 1; // right
-  } else if (x < 195) {
-    result = 2; // up
-  } else if (x < 380) {
-    result = 3; // down
-  } else if (x < 790) {
-    result = 4; // left
-  }
-  return result;
-}
-
 Buttons GetButtons(void)
 {
   enum Buttons ret_val = EV_NONE;
-  int readKey = analogRead(0);
-  if (readKey < 790) {
-      delay(100);
-      readKey = analogRead(0);
-    }
- int button = evaluateButton(readKey);
- 
-  if (button == 1)
+  if (digitalRead(BUTTON_OK))
   {
     ret_val = EV_OK;
-  
   }
-  else if (button == 4)
+  else if (digitalRead(BUTTON_CANCEL))
   {
     ret_val = EV_CANCEL;
-   
   }
-  else if (button == 3)
+  else if (digitalRead(BUTTON_NEXT))
   {
     ret_val = EV_NEXT;
-  
   }
-  else if (button == 2)
+  else if (digitalRead(BUTTON_PREV))
   {
     ret_val = EV_PREV;
-    
   }
-  
-  
+  Serial.print(ret_val);
   return ret_val;
 }
 
-void adc_init()
+void setup()
 {
-  ADCSRA |= ((1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0));
-  ADMUX  |= (1<<REFS0);
-  ADCSRA |= (1<<ADEN);
-  ADCSRA |= (1<<ADSC);
-}
-
-uint16_t read_adc(uint8_t channel)
-{
-  
-  ADMUX &= 0xf0;
-  ADMUX |= channel;
-  ADCSRA |= (1<<ADSC);
-  while(ADCSRA & (1<<ADSC));
-  return ADC;
-}
-
-double read_temp() //read and return temperature
-{                                                                                                               
- double voltage=0;                      
- double Temperature=0;                     
- double temperatureCelsius=0; int reading;
- reading=read_adc(1);
- voltage=reading*5.0; voltage/=1024.0; 
- temperatureCelsius=(voltage-0.5)*100;
- return temperatureCelsius;
-}
-
-
-
-void setup() {
-  pinMode(BEC_pin,OUTPUT);
-  adc_init();
+  Serial.begin(9600);
   lcd.begin(16,2);
-  //EEPROM.put(0,parameter);
-  EEPROM.get(0, parameter);
-  timer1();
-}
-
-ISR(TIMER1_COMPA_vect)
-{
-  PORTB ^= _BV(PB5);
-  if (digitalRead(13) == 0)
-    two_second = true;
-  //operatiuni pentru ora
-  s++;
-  //uptime++;
-  if (s == 60)
-  {
+  pinMode(6, INPUT);
   
-    m++;
-    s = 0;
-    if (m == 60)
-    {
-      h++;
-      m = 0;
-    }
-  }
-  one_second = true;
+  digitalWrite(6, LOW); // pull-down
+    pinMode(7, INPUT);
+  digitalWrite(7, LOW); // pull-down
+    pinMode(8, INPUT);
+  digitalWrite(8, LOW); // pull-down
+    pinMode(9, INPUT);
+  digitalWrite(9, LOW); // pull-down
+  
+  pinMode(10,OUTPUT);
+  
+  TCCR1A = 0; // Timer/Counter1 Control Register A
+  TCCR1B = 0; // Timer/Counter1 Control Register B
+  OCR1A = 65535/4; // Output compare register
+  TIMSK1 |= (1 << OCIE1A); //Timer/Counter1 Interrupt Mask Register
+  TCCR1B |= (1 << WGM12) | (1 << CS10)|(1 << CS12);//prescaler 1024 
 }
 
-void loop() {
-  if (one_second)
-  {
-    if (two_second)
-    {
-      
-      temperatura = read_temp();
-      lcd.clear();
-      two_second = false;
-    }
-    //verificam temperatura citita
-   
-    kp = parameter.kp;
-    kd = parameter.kd;
-    ki = parameter.ki;//
-    volatile Buttons event = GetButtons();
-    if (event != EV_NONE)
-    {
-      state_machine(current_menu, event);
-    }
-    print_menu(scroll_menu);
-    delay(500);
-    one_second = false;
-}
-}
-
-void PID(void)
+ISR(TIMER1_COMPA_vect) //numaratorul pentru ceas si secunde
 {
-  float error =  moving_sp - temperatura;
-  if (error < 3 && error > -3)
-    suma_error += error;
-  suma_error = constrain(suma_error, -15, 15);
-  float diff = (error - prev_error);
-  float output = kp * error + ki * suma_error + kd * diff;
-  output = constrain(output, 0, 255);
-  prev_error = error;
+  sec++;
+  if( sec == 59 )
+    {
+      sec = 0;
+      min++;
+    }
+  
+  	if( min == 59 )
+    {
+      min = 0;
+      ora++;
+    }
+}
 
+//Citeste Temperatura
+int get_temperature(int pin) 
+{
+	int temperature = analogRead(A0);
+	float voltage = temperature * 5.0;
+	voltage = voltage / 1024.0;
+	return ((voltage - 0.5) * 100);
+}
+
+void PID()
+{  	
+  eroare = moving_sp - temperatura_citita_senzor;
+    
+  suma_erori= suma_erori + eroare *dt;
+    
+  derivativa = (eroare - eroare_anterioara) / dt;
+  
+  output = (kp * eroare) + (ki * suma_erori ) + (kd * derivativa);
+    
+  eroare_anterioara = eroare;
   analogWrite(BEC_pin, int(output));
+}
+
+void afisare_timp()
+{
+	int min1 =0; int sec1=0;
+  	int remaining = 0;
+  	timp_inc=tIncal;
+  	timp_men=tMen;
+  	timp_rac=tRac;
+  	lcd.setCursor(0,0);
+  	lcd.print("P:");
+  	lcd.print(moving_sp);
+    uptime++;
+  
+  	if(uptime<= timp_inc)
+    {
+      lcd.setCursor(0,1);
+      lcd.print("TInc:");
+      remaining = timp_inc - uptime;
+      moving_sp = temperatura_citita_senzor + (temp - temperatura_citita_senzor) * (timp_inc - remaining)/timp_inc;
+    }
+  	else if(uptime <= (timp_inc + timp_men))
+  	{
+      lcd.setCursor(0,1);
+      lcd.print("Tmen:");
+      remaining = (timp_inc +timp_men) - uptime;
+  	}
+  	else if( uptime <= (timp_inc + timp_men + timp_rac))
+    {
+      lcd.setCursor(0,1);
+      lcd.print("TRac: ");
+      remaining = (timp_inc + timp_men + timp_rac) - uptime;
+      moving_sp = temp - (temp - temperatura_citita_senzor) * (timp_rac - remaining)/timp_rac;
+    }
+  	else
+    {
+      lcd.setCursor(0,1);
+      lcd.print("Oprit: ");
+    }
+  
+  	min1 = remaining / 60;
+  	sec1 = remaining % 60;
+  	lcd.print(min1);lcd.print(":");lcd.print(sec1);
+  	PID();
+}
+
+void loop()
+{
+  temperatura_citita_senzor = get_temperature(A0);
+  
+  volatile Buttons event = GetButtons();
+  if (event != EV_NONE)
+  {
+    state_machine(current_menu, event);
+  }
+    print_menu(scroll_menu);
+    delay(1000);
 }
